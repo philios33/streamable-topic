@@ -1,0 +1,20 @@
+{
+  "name": "mongo-topic",
+  "version": "1.0.0",
+  "description": "Event streaming concepts implemented on top of a single node persistent mongo storage engine.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "ioredis": "^5.2.2",
+    "mongodb": "^4.8.1"
+  }
+}
