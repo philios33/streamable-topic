@@ -3,4 +3,3 @@ mongo-data
 redis-data
 dist
 private.md
-src/predictor
