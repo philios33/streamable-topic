@@ -24,7 +24,7 @@ export class RedisClientController {
         this.eventsCallback = () => {};
     }
 
-    getNewRedisClient() {
+    private getNewRedisClient() {
         const client = new Redis(this.redisUrl, { 
             lazyConnect: true,
             autoResubscribe: false,

@@ -26,11 +26,17 @@ export class MongoClientController {
         this.isStarting = true;
 
         const client = new MongoClient(this.mongoUrl, {
-            connectTimeoutMS: 15 * 1000,
-            socketTimeoutMS: 15 * 1000,
-            serverSelectionTimeoutMS: 0, // This seems to retry forever in the background
             loggerLevel: "info",
-            // directConnection: true, // This is important, it forces a single node style connection
+            serverSelectionTimeoutMS: 0, // This will retry connection forever
+            connectTimeoutMS: 10 * 1000, // This seems to be used deeper down the stack
+            socketTimeoutMS: 120 * 1000, // Previously 15 seconds, but this caused unnecessary reconnections
+            keepAlive: true,
+            keepAliveInitialDelay: 20 * 1000,
+            heartbeatFrequencyMS: 20 * 1000,
+            maxPoolSize: 1,
+            /*
+            directConnection: true, // This is important, it forces a single node style connection
+            */
         });
         this.client = client;
 
@@ -42,7 +48,7 @@ export class MongoClientController {
                 console.error("MONGO CLIENT " + this.connectionId + ": ERROR:", e);
             });
             client.addListener("connectionCreated", (e) => {
-                console.error("MONGO CLIENT " + this.connectionId + ": Connection created:", e);
+                // console.log("MONGO CLIENT " + this.connectionId + ": Connection created:", e);
             });
             client.addListener("connectionReady", (e) => {
                 // console.log("MONGO CLIENT " + this.connectionId + ": Connection is ready");
@@ -54,7 +60,7 @@ export class MongoClientController {
                 console.error("MONGO CLIENT " + this.connectionId + ": Server closed:", e);
             });
             client.addListener("serverOpening", (e) => {
-                console.error("MONGO CLIENT " + this.connectionId + ": Server opening:", e);
+                // console.log("MONGO CLIENT " + this.connectionId + ": Server opening:", e);
             });
 
             client.connect((err) => {

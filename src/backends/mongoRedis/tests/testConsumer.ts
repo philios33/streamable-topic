@@ -1,5 +1,7 @@
-import { TopicConsumer } from "../topicConsumer";
 
+// npx ts-node ./src/backends/mongoRedis/tests/testConsumer.ts 
+
+import { MongoRedisTopicConsumer } from "../consumer";
 
 const mongoUrl = "mongodb://localhost:27017";
 const databaseName = "topics";
@@ -13,14 +15,18 @@ type PhilMessage = {
 
 (async () => {
     try {
-        const tc = new TopicConsumer<PhilMessage>(mongoUrl, databaseName, collectionName, redisUrl);
+        const tc = new MongoRedisTopicConsumer<PhilMessage>(mongoUrl, databaseName, collectionName, redisUrl);
         await tc.start();
 
         tc.streamMessagesFrom((msg) => {
             console.log("MSG: " + JSON.stringify(msg));
-            if (msg._id > 20) {
-                throw new Error("Simulated crash");
+
+            /*
+            if (msg.id > 20) {
+                throw new Error("Simulate crash");
             }
+            */
+
         }, null, {
             // isGreat: false
         });
