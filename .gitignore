@@ -2,4 +2,3 @@ node_modules
 mongo-data
 redis-data
 dist
-private.md
