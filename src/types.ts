@@ -1,3 +1,4 @@
+export * from './backends/mongoRedis/types';
 
 export type TopicMessage<T> = {
     createdAt: Date

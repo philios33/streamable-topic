@@ -11,8 +11,8 @@ import { Document, MongoClient } from "mongodb";
 import { TopicConsumer } from "../../topicConsumer";
 import { MongoClientController } from "./mongoClientController";
 import { RedisClientController } from "./redisClientController";
-import { TopicMessageDocument, TopicMessageIdentifier } from "../../types";
-import { MongoTopicMessageDocument } from "./types";
+import { TopicMessageDocument, TopicMessageIdentifier, MongoTopicMessageDocument } from "../../types";
+
 
 export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
 
@@ -155,7 +155,7 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
                     // Convert to generic type of topic message with "id" field instead of "_id"
                     const topicMsg = { ...msg, _id: undefined, id: msg._id }
                     delete topicMsg._id;
-                    this.callback(topicMsg);
+                    this.callback(topicMsg as TopicMessageDocument<T>);
                 } catch(e) {
                     console.error(e);
                     console.error("The consumer could not handle the message", JSON.stringify(msg, null, 4));

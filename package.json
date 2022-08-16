@@ -1,6 +1,6 @@
 {
   "name": "streamable-topic",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "Consumer and producer abstraction for event based systems using topic concepts.",
   "repository": {
     "type": "git",
