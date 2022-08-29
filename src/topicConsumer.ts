@@ -24,4 +24,5 @@ export abstract class TopicConsumer<T> {
 
     abstract streamMessagesFrom(callback: (message: TopicMessageDocument<T>) => void, lastId: null | TopicMessageIdentifier, queryDoc: any, noMoreMessages: () => void): Promise<void>;
 
+    abstract stop() : Promise<void>;
 }

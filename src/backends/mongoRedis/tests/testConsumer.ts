@@ -30,6 +30,11 @@ type PhilMessage = {
         }, null, {
             // isGreat: false
         });
+
+        setTimeout(async () => {
+            await tc.stop();
+            console.log("Stopped consuming");
+        }, 30 * 1000);
         
     } catch(e) {
         console.error(e);

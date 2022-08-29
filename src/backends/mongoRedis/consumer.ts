@@ -85,6 +85,12 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
         // console.log("Subscribed to redis signal channel!");
     }
 
+    async stop() {
+        this.isCrashed = true;
+        this.client?.close();
+        this.redis?.disconnect();
+    }
+
     private getCollection() {
         if (this.client === null) {
             throw new Error("this.client is null");
