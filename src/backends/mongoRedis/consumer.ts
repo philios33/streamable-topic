@@ -10,7 +10,7 @@ import Redis from "ioredis";
 import { Document, MongoClient } from "mongodb";
 import { TopicConsumer } from "../../topicConsumer";
 import { MongoClientController } from "./mongoClientController";
-import { RedisClientController } from "./redisClientController";
+import { ReliableRedisClient } from "./reliableRedisClient";
 import { TopicMessageDocument, TopicMessageIdentifier, MongoTopicMessageDocument } from "../../types";
 
 
@@ -19,7 +19,8 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
     private mongoUrl: string;
     private databaseName: string;
     private collectionName: string;
-    private redisUrl: string;
+    private redisHost: string;
+    private redisPort: number;
 
     private client: MongoClient | null;
     private redis: Redis | null;
@@ -27,16 +28,21 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
     private isStreaming: boolean;
     private isPolling: boolean;
     private isMoreMessages: boolean;
-    private isCrashed: boolean;
+    private isStopped: boolean;
 
+    private debuggingHandlers: Array<(type: string, message: string) => void>
+    private crashedHandlers: Array<(error: Error) => void>
     
     private hasCalledNoMoreMessages: boolean;
 
-    constructor(mongoUrl: string, databaseName: string, collectionName: string, redisUrl: string) {
+    private pollingLoop: null | ReturnType<typeof setInterval>;
+
+    constructor(mongoUrl: string, databaseName: string, collectionName: string, redisHost: string, redisPort: number) {
         super(collectionName);
 
         this.client = null;
         this.redis = null;
+        // console.log("Constructing a new Consuer, redis is null");
         this.mongoUrl = mongoUrl;
         this.databaseName = databaseName;
         this.collectionName = collectionName;
@@ -44,51 +50,110 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
         this.isStreaming = false;
         this.isPolling = false;
         this.isMoreMessages = true;
-        this.isCrashed = false;
-        this.redisUrl = redisUrl;
+        this.isStopped = false;
+        this.redisHost = redisHost;
+        this.redisPort = redisPort;
         
         this.hasCalledNoMoreMessages = false;
+        this.debuggingHandlers = [];
+        this.crashedHandlers = [];
+
+        this.pollingLoop = null;
     }
 
-    async start(): Promise<void> {
+    public async start(): Promise<void> {
         if (this.isStarting) {
             throw new Error("Already started");
         }
+        this.fireDebug("START", "this.started was called on the consumer");
         this.isStarting = true;
         const mcc = new MongoClientController(this.mongoUrl, this.collectionName + "-consumer");
         await mcc.start();
         this.client = mcc.getClient();
         // console.log("Mongo client is connected and ready!");
 
-        const rcc = new RedisClientController(this.redisUrl, this.collectionName + "-consumer");
-        await rcc.start(async (connectionState) => {
-            if (connectionState === "ready") {
+        const rrc = new ReliableRedisClient(this.collectionName + "-consumer", this.redisHost, this.redisPort);
+        await rrc.start(async (event) => {
+            if (event.type === "FIRST_READY" || event.type === "RECONNECTED") {
                 // Resubscribe
                 if (this.redis !== null) {
                     await this.startListeningForNewMessageSignal();
                     // console.log("Resubscribed to redis channel!");
+                } else {
+                    // This callback occurred during the startup process, which means it is the very first ready event and start listening soon anyway
                 }
                 
                 // Make sure we trigger the poller when redis reconnects
                 this.isMoreMessages = true;
             }
         });
-        this.redis = rcc.getClient();
-        // console.log("Redis client is connected and ready !");
+        this.redis = rrc.getClient();
+        // console.log("Redis client is connected and ready");
 
         // Handle wake signal
         this.redis.on("message", (channel, message) => {
             this.isMoreMessages = true;
+            this.fireDebug("REDIS_TRIGGER", "The consumer received a trigger from redis to check the mongo DB");
         });
         
         await this.startListeningForNewMessageSignal();
         // console.log("Subscribed to redis signal channel!");
+
+        this.fireDebug("START_FINISHED", "this.started finished on the consumer");
     }
 
-    async stop() {
-        this.isCrashed = true;
+    public async stop() {       
+        this.fireDebug("STOPPED", "The consumer has unsubscribed and will quit the polling loop");
+        if (this.pollingLoop !== null) {
+            clearInterval(this.pollingLoop);
+            this.pollingLoop = null;
+        }
+        
+        this.isStopped = true;
+        
         this.client?.close();
-        this.redis?.disconnect();
+        this.redis?.disconnect(false);
+    }
+
+    /*
+    public addCrashedHandler(handler: (error: Error) => void) {
+        this.crashedHandlers.push(handler);
+    }
+    */
+
+    public addDebuggingHandler(handler: (type: string, message: string) => void) {
+        this.debuggingHandlers.push(handler);
+    }
+
+    /*
+    private fireCrashedHandlers(error: Error) {
+        if (this.isStopped) {
+            return;
+        }
+        for (const handler of this.crashedHandlers) {
+            try {
+                handler.apply(this, [error]);
+            } catch(e) {
+                console.error("ERROR: Crashed handler threw exception, please handle this");
+                console.error(e);
+            }
+        }
+    }
+    */
+
+    private fireDebug(type: string, message: string) {
+        if (this.isStopped) {
+            return;
+        }
+        for (const handler of this.debuggingHandlers) {
+            try {
+                console.log(type, message);
+                handler.apply(this, [type, message]);
+            } catch(e) {
+                console.error("ERROR: Debugging handler threw exception, please handle this");
+                console.error(e);
+            }
+        }
     }
 
     private getCollection() {
@@ -98,28 +163,43 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
         return this.client.db(this.databaseName).collection(this.collectionName);
     }
 
-    public async streamMessagesFrom(callback: (message: TopicMessageDocument<T>) => void, lastId: null | TopicMessageIdentifier = null, queryDoc: Document = {}, noMoreMessages: () => void = () => {}): Promise<void> {
+    // Sets up a consuming stream.  
+    // The messageCallback is called for every message that is streamed and is expected to be handled properly.
+    // The noMoreMessagesCallback is called whenever the queue is exhausted
+    // The crashCallback is called when the consumer crashes.
+    public streamMessagesFrom(messageCallback: (message: TopicMessageDocument<T>) => Promise<void>, lastId: null | TopicMessageIdentifier = null, noMoreMessagesCallback: () => void, crashCallback: (e: Error) => void): void {
+        if (!this.isStarting) {
+            throw new Error("Cannot stream on a non started consumer");
+        }
         if (this.isStreaming) {
             throw new Error("Already streaming");
         }
         this.isStreaming = true;
 
-        this.callback = callback;
+        this.messageCallback = messageCallback;
+        this.noMoreMessagesCallback = noMoreMessagesCallback;
+        this.crashCallback = crashCallback;
+
         this.lastId = lastId;
-        this.queryDoc = queryDoc;
 
         // Start a loop here which polls for new messages until there are no more
-        const pollingLoop = setInterval(async () => {
+        this.pollingLoop = setInterval(async () => {
             // Stop forever
-            if (this.isCrashed) {
-                clearInterval(pollingLoop);
+            if (this.isStopped) {
+                this.fireDebug("STOPPED", "The consumer has unsubscribed and will quit the polling loop");
+                if (this.pollingLoop !== null) {
+                    clearInterval(this.pollingLoop);
+                    this.pollingLoop = null;
+                }
                 return;
             }
             if (!this.isMoreMessages) { // Set to true to unlock the interval
+                // Calling a noMoreMessages function is useful for the system to know when all processing is complete
                 if (!this.hasCalledNoMoreMessages) {
                     this.hasCalledNoMoreMessages = true;
                     try {
-                        noMoreMessages();
+                        this.fireDebug("NO_MORE_MESSAGES", "There are no more messages (for now)");
+                        this.noMoreMessagesCallback();
                     } catch(e) {
                         // Ignore but display error
                         console.error(e);
@@ -128,58 +208,73 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
                 return;
             }
             if (this.isPolling) {
-                console.warn("Locked, still polling...");
+                this.fireDebug("LOCKED", "The polling loop is still running, so we do nothing for this execution");
                 return;
             }
             this.isPolling = true;
             try {
+                this.fireDebug("POLLING_STARTED", "The consumer is running its polling routine");
                 await this.pollForNewMessages();
+                this.fireDebug("POLLING_FINISHED", "The consumer finished its polling routine");
                 this.isPolling = false;
             } catch(e) {
-                console.warn(e);
+                this.fireDebug("POLLING_FAILED", "The consumer failed to run its polling routine");
                 this.isPolling = false;
             }
         }, 1000);
+
+        
+
     }
 
     private async pollForNewMessages() {
         // console.log("Polling for new messages");
-        const newMessages = await this.fetchNextMessagesFromMongo(100, this.lastId, this.queryDoc);
+        const newMessages = await this.fetchNextMessagesFromMongo(100, this.lastId);
         if (newMessages.length === 0) {
             // No more messages
             // console.log("No more messages");
             this.isMoreMessages = false;
         } else {
+            this.fireDebug("FOUND", "Found " + newMessages.length + " new messages to process");
             // Callback these messages
             for (const msg of newMessages) {
                 // Note: If we don't catch this here, it means that polling will fail if the callback throws an error.  
                 // The poll will instantly retry anyway which will cause the consumer to be spammed with the same next message.
-                // To avoid this behaviour, we say that the consumer itself fails and crash the whole instance.
+                // To avoid this behaviour, we say that the consumer crashed and runs the crashed callback routine.
                 try {
                     this.lastId = msg._id;
+
+                    this.fireDebug("MESSAGE", "Processing message: " + msg._id + " (" + msg.logCompactId + ") pushed at " + msg.createdAt);
 
                     // Convert to generic type of topic message with "id" field instead of "_id"
                     const topicMsg = { ...msg, _id: undefined, id: msg._id }
                     delete topicMsg._id;
-                    this.callback(topicMsg as TopicMessageDocument<T>);
-                } catch(e) {
+                    this.messageCallback(topicMsg as TopicMessageDocument<T>);
+                    this.fireDebug("CONSUMED", "The callback has finished processing the message");
+                } catch(e: any) {
+                    this.fireDebug("CONSUMPTION_FAILED", "The callback failed to process the message properly: " + e.message);
                     console.error(e);
                     console.error("The consumer could not handle the message", JSON.stringify(msg, null, 4));
                     console.error("The consumer will not stream any more messages");
-                    this.isCrashed = true;
+                    try {
+                        this.crashCallback(e);
+                    } catch(e: any) {
+                        console.error("Crash callback crashed, please fix this first");
+                        console.error(e);
+                    }
+
+                    this.stop();  // This will shutdown the whole consumer, removing timeouts and setting isStopped
+                    
                     return;
                 }                
             }
         }
     }
 
-    private async fetchNextMessagesFromMongo(limit: number, lastId: TopicMessageIdentifier | null, queryDoc: any): Promise<Array<MongoTopicMessageDocument<T>>> {
+    private async fetchNextMessagesFromMongo(limit: number, lastId: TopicMessageIdentifier | null): Promise<Array<MongoTopicMessageDocument<T>>> {
         const col = this.getCollection();
 
         const thisQuery: any = {};
-        for (const key in queryDoc) {
-            thisQuery["payload." + key] = queryDoc[key];
-        }
         if (lastId !== null) {
             thisQuery["_id"] = {
                 $gt: lastId
@@ -206,6 +301,7 @@ export class MongoRedisTopicConsumer<T> extends TopicConsumer<T> {
             throw new Error("this.redis is null");
         }
         await this.redis.subscribe("TOPIC-" + this.collectionName);
+        this.fireDebug("REDIS_LISTENING", "The consumer is listening for topic signals using a redis subscription on channel: " + "TOPIC-" + this.collectionName);
     }
 
 }

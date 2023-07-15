@@ -2,15 +2,19 @@
 
 Event streaming concepts implemented on top of an abstracted storage backend.  
 
-A topic is a list of ordered messages containing known payloads.  You may push new messages to the end of a topic, and consume messages starting from some position.  A consumer will keep track of the last message consumed and will always stream new messages as they arrive for you.  Messages are always guaranteed to be streamed in the correct order.
+A topic is a list of ordered (with respect to sharding key) messages containing known payloads.  You may push new messages to the end of a topic, and consume messages starting from some position.  A consumer will keep track of the last message consumed and will always stream new messages as they arrive for you.  Given a set of messages with identical shardingKey, these messages are always guaranteed to be streamed in the order they are produced.
 
 Produce messages with logCompactIds to notify the backend that any previous message with the same id is now redundant and can be removed from the storage engine automatically.
 
-Use a Topic Setter in conjunction with one or many Topic Consumers to build a Topic Processor.  A processor is a recoverable process that transforms data from one topic to another.
-
 Specify the Payload type when you create the Comsumer Producer instances.  Make sure that types are at least backwards compatible with existing data, otherwise you may accidently stream something with unexpected incorrect typings.  Use optional keys or a whole new version that the topic supports.
 
-These concepts are relatively simple but a powerful building block for event based systems.
+## Topic Processors (Deprecated)
+
+A processor is a recoverable process that transforms data from one topic to another.  It consumes messages from 1 or many topics and writes to some target topic.  By their very nature, you need exactly one processor running for each target topic.  Messages can get corrupted very easily if you have two processors running which are both trying to write to the target topic.  This is why singleton topic processors are a bad pattern.  The soleTopicSetter class is now removed from this repository.
+
+### Shared state
+
+A better model is to outsource/delegate the state.  The shared state model allows a consumer to build up a stateful model within a state manager rather than having to keep track of built state itself.  This makes the processors stateless and hence scalable.
 
 ## Backend Implementations
 

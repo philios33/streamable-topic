@@ -9,7 +9,7 @@
 import Redis from "ioredis";
 import { Document, MongoClient } from "mongodb";
 import { MongoClientController } from "./mongoClientController";
-import { RedisClientController } from "./redisClientController";
+import { ReliableRedisClient } from "./reliableRedisClient";
 import { TopicProducer } from "../../topicProducer";
 import { MongoTopicMessageDocument, MongoSequenceDocument } from "./types";
 
@@ -19,13 +19,15 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
     private mongoUrl: string;
     private databaseName: string;
     private collectionName: string;
-    private redisUrl: string;
+    private redisHost: string;
+    private redisPort: number;
 
     private client: MongoClient | null;
     private redis: Redis | null;
     private isStarting: boolean;
+    private isStopped: boolean;
 
-    constructor(mongoUrl: string, databaseName: string, collectionName: string, redisUrl: string) {
+    constructor(mongoUrl: string, databaseName: string, collectionName: string, redisHost: string, redisPort: number) {
         super(collectionName);
 
         this.client = null;
@@ -34,10 +36,15 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
         this.databaseName = databaseName;
         this.collectionName = collectionName;
         this.isStarting = false;
-        this.redisUrl = redisUrl;
+        this.isStopped = false;
+        this.redisHost = redisHost;
+        this.redisPort = redisPort;
     }
 
     async start(): Promise<void> {
+        if (this.isStopped) {
+            throw new Error("Already stopped");
+        }
         if (this.isStarting) {
             throw new Error("Already started");
         }
@@ -47,10 +54,21 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
         this.client = mcc.getClient();
         // console.log("Mongo client is connected and ready!");
 
-        const rcc = new RedisClientController(this.redisUrl, this.collectionName + "-producer");
-        await rcc.start(null);
-        this.redis = rcc.getClient();
+        const rrc = new ReliableRedisClient(this.collectionName + "-producer", this.redisHost, this.redisPort);
+        await rrc.start();
+        this.redis = rrc.getClient();
         // console.log("Redis client is connected and ready!");
+    }
+
+    public async stop() {
+        if (this.isStopped) {
+            throw new Error("Already stopped");
+        }
+        this.isStopped = true;
+        // this.fireDebug("STOP", "this.stop was called on the consumer");
+        this.client?.close();
+        this.redis?.disconnect(false);
+        // this.fireDebug("STOP_FINISHED", "this.stop finished on the consumer");
     }
     
 
@@ -87,7 +105,10 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
         }
     }
 
-    public async pushMessageToTopic(messagePayload: T, logCompactId?: string): Promise<void> {
+    public async pushMessageToTopic(messagePayload: T, shardingKey: string, logCompactId?: string): Promise<void> {
+        if (this.isStopped) {
+            throw new Error("Already stopped");
+        }
         const col = this.getCollection();
 
         /**
@@ -103,6 +124,7 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
         const msgDoc: MongoTopicMessageDocument<T> = {
             _id: nextId,
             createdAt: new Date(),
+            shardingKey,
             payload: messagePayload,
         }
         if (logCompactId) {
@@ -119,13 +141,18 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
         // This just sends a signal to listening consumers that there is a new message written.  
         // All consumers should wake up and do a poll to fetch it.
         // Note: No need to await for this to return since it is not required for confirmation.
+        // This is NOT reliable if it occurs when redis is down.  But we have already written the event so if the broadcast fails then streaming could choke.
+        // However, this function will eventually fail and schedule infinite retries.  This wont protect against a killed producer process but it is probably good enough.
         this.broadcastNewMessageSignalToRedis();
         
         // TODO Handle log compacting by removing messages with matching logCompactId fields
-        // TODO Write library to setup mongo indexes so that a topic collection has the correct index on the log compact field.
+        // TODO Write library to setup mongo indexes so that a topic collection has the correct index on the log compact field, to help with the above
     }
 
     private async broadcastNewMessageSignalToRedis() {
+        if (this.isStopped) {
+            throw new Error("Already stopped");
+        }
         if (this.redis === null) {
             throw new Error("this.redis is null");
         }
@@ -143,5 +170,5 @@ export class MongoRedisTopicProducer<T> extends TopicProducer<T> {
             }, 10 * 1000);
         }
     }
-
 }
+

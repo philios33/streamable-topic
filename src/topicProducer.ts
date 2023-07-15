@@ -1,5 +1,5 @@
 /**
- * A Topic consumer handles the actual reading of and ultimate streaming of a topic
+ * A Topic producer handles the actual writing of messages to a topic
  */
 
 export abstract class TopicProducer<T> {
@@ -11,5 +11,7 @@ export abstract class TopicProducer<T> {
 
     abstract start() : Promise<void>;
 
-    abstract pushMessageToTopic(messagePayload: T, logCompactId?: string): Promise<void>
+    abstract pushMessageToTopic(messagePayload: T, messageShardingKey: string, logCompactId?: string): Promise<void>
+
+    abstract stop() : Promise<void>;
 }
